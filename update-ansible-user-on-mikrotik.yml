@@ -1,0 +1,101 @@
+---
+- name: Кросс-обновление пользователей MikroTik
+  hosts: routers
+  gather_facts: false
+
+  vars:
+    USERNAME: "{{ mikrotik_user }}"
+    OLD_PASS: "{{ mikrotik_password }}"
+    NEW_PASS: "{{ ansible_user_password }}"
+
+  tasks:
+    # Шаг 1: Пользователь из .env создает ansible_user02
+    - name: "Шаг 1: Создаем ansible_user02"
+      ansible.builtin.shell:
+        cmd: |
+          sshpass -p "{{ OLD_PASS }}" \
+          ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          {{ USERNAME }}@{{ ansible_host }} \
+          "/user add name=ansible_user02 password={{ NEW_PASS }} group=full"
+      delegate_to: localhost
+      register: step1
+      ignore_errors: yes
+      changed_when: step1.rc == 0
+      no_log: true
+
+    # Шаг 1b: Если пользователь уже существует - обновляем пароль
+    - name: "Шаг 1b: Обновляем ansible_user02 если существует"
+      ansible.builtin.shell:
+        cmd: |
+          sshpass -p "{{ OLD_PASS }}" \
+          ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          {{ USERNAME }}@{{ ansible_host }} \
+          "/user set [find name=ansible_user02] password={{ NEW_PASS }} group=full"
+      delegate_to: localhost
+      register: step1b
+      when: step1.rc != 0
+      ignore_errors: yes
+      no_log: true
+
+    # Шаг 2: ansible_user02 обновляет ansible_user01
+    - name: "Шаг 2: Обновляем ansible_user01 через ansible_user02"
+      ansible.builtin.shell:
+        cmd: |
+          sshpass -p "{{ NEW_PASS }}" \
+          ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          ansible_user02@{{ ansible_host }} \
+          "/user set [find name=ansible_user01] password={{ NEW_PASS }} group=full"
+      delegate_to: localhost
+      register: step2
+      ignore_errors: yes
+      no_log: true
+
+    # Финальная проверка через ansible_user02
+    - name: "Проверка через ansible_user02"
+      ansible.builtin.shell:
+        cmd: |
+          sshpass -p "{{ NEW_PASS }}" \
+          ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          ansible_user02@{{ ansible_host }} \
+          "/user print where name=ansible_user01 or name=ansible_user02"
+      delegate_to: localhost
+      register: final_check
+      ignore_errors: yes
+
+    # Дополнительная проверка через ansible_user01 (с новым паролем)
+    - name: "Проверка через ansible_user01"
+      ansible.builtin.shell:
+        cmd: |
+          sshpass -p "{{ NEW_PASS }}" \
+          ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          ansible_user01@{{ ansible_host }} \
+          "/user print where name=ansible_user01"
+      delegate_to: localhost
+      register: user01_check
+      ignore_errors: yes
+
+    # Результат
+    - name: "Результат кросс-обновления"
+      ansible.builtin.debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════════════╗
+          ║              КРОСС-ОБНОВЛЕНИЕ НА {{ ansible_host }}              ║
+          ╠════════════════════════════════════════════════════════════════╣
+          ║ Шаг 1: {{ USERNAME }} → ansible_user02                          ║
+          ║   Статус: {% if step1.rc == 0 %}✅ СОЗДАН{% elif step1b.rc == 0 %}🔄 ОБНОВЛЕН{% else %}❌ ОШИБКА{% endif %}
+          ╠════════════════════════════════════════════════════════════════╣
+          ║ Шаг 2: ansible_user02 → ansible_user01 (обновление пароля)      ║
+          ║   Статус: {% if step2.rc == 0 %}✅ УСПЕШНО{% else %}❌ ОШИБКА{% endif %}
+          ╠════════════════════════════════════════════════════════════════╣
+          ║ Проверка доступа:                                              ║
+          ║   ansible_user01 (новый пароль): {% if user01_check.rc == 0 %}✅ ДА{% else %}❌ НЕТ{% endif %}
+          ║   ansible_user02 (новый пароль): {% if final_check.rc == 0 %}✅ ДА{% else %}❌ НЕТ{% endif %}
+          ╠════════════════════════════════════════════════════════════════╣
+          ║ Список пользователей:                                          ║
+          ║ {{ final_check.stdout | default('Нет данных') }}
+          ╚════════════════════════════════════════════════════════════════╝

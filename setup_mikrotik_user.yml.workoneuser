@@ -1,0 +1,67 @@
+---
+- name: Создать или обновить пользователя на MikroTik
+  hosts: routers
+  gather_facts: false
+
+  vars:
+    target_user: "ansible_user01"
+    target_group: "full"
+
+  tasks:
+    - name: Проверка наличия переменных
+      ansible.builtin.fail:
+        msg: "Переменные не заданы! Используйте -e 'mikrotik_user=... mikrotik_password=... ansible_user01_password=...'"
+      when:
+        - mikrotik_user is not defined or mikrotik_user == ""
+        - mikrotik_password is not defined or mikrotik_password == ""
+        - ansible_user01_password is not defined or ansible_user01_password == ""
+
+    - name: Попытка создать пользователя
+      ansible.builtin.shell:
+        cmd: |
+          sshpass -p "{{ mikrotik_password }}" \
+          ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          {{ mikrotik_user }}@{{ ansible_host }} \
+          '/user add name={{ target_user }} password={{ ansible_user01_password }} group={{ target_group }}'
+      delegate_to: localhost
+      register: result
+      ignore_errors: yes
+      changed_when: result.rc == 0
+      no_log: true
+#      notify: show_result
+
+    - name: Обновить пароль (если пользователь уже существует)
+      ansible.builtin.shell:
+        cmd: |
+          sshpass -p "{{ mikrotik_password }}" \
+          ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          {{ mikrotik_user }}@{{ ansible_host }} \
+          '/user set [find name={{ target_user }}] password={{ ansible_user01_password }} group={{ target_group }}'
+      delegate_to: localhost
+      register: update_result
+      no_log: true
+      when: result.rc is defined and result.rc != 0
+      changed_when: true
+
+    - name: Проверить пользователя
+      ansible.builtin.shell:
+        cmd: |
+          sshpass -p "{{ mikrotik_password }}" \
+          ssh -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          {{ mikrotik_user }}@{{ ansible_host }} \
+          '/user print where name={{ target_user }}'
+      delegate_to: localhost
+      register: user_check
+
+    - name: Результат
+      ansible.builtin.debug:
+        msg: |
+          {% if result.rc is defined and result.rc == 0 %}
+          ✅ Пользователь {{ target_user }} СОЗДАН
+          {% else %}
+          🔄 Пароль пользователя {{ target_user }} ОБНОВЛЕН
+          {% endif %}
+          {{ user_check.stdout }}
